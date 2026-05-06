@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Finance Deep Dark Mode */
+  --bg: #050505;          /* Noir presque pur */
+  --bg2: #0a0a0a;         /* Gris très sombre */
+  --bg3: #111111;         /* Gris finance */
+  --card: #0d0d0d;        /* Fond de carte épuré */
+  --card2: #141414;
+  
+  /* Borders & Dividers (Very subtle) */
+  --border: rgba(255, 255, 255, 0.05);
+  --border2: rgba(255, 255, 255, 0.03);
+  
+  /* Accents (Muted & Professional) */
+  --green: #00ff88;       /* Vert néon pour les indicateurs de profit */
+  --green2: #00cc77;
+  --green-dim: rgba(0, 255, 136, 0.05);
+  --green-glow: rgba(0, 255, 136, 0.15);
+  
+  --gold: #f4bf4f;        /* Doré premium */
+  --gold-dim: rgba(244, 191, 79, 0.05);
+  
+  --red: #ff4d4d;
+  --red-dim: rgba(255, 77, 77, 0.05);
+  
+  /* Typography */
+  --text: #f0f0f0;        /* Blanc cassé (moins fatigant) */
+  --text2: #888888;       /* Gris neutre */
+  --text3: #444444;       /* Gris désactivé */
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: #222; border-radius: 10px; }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+
+/* Custom utility for finance style labels */
+.label-mono {
+  font-family: 'Inter', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text3);
+}
