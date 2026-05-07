@@ -1,7 +1,8 @@
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import os
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from team_stats import get_team_stats, get_league_averages
 from poisson_model import predict_match
@@ -47,6 +48,20 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     start_scheduler()
+    
+    # Enregistrement automatique du Webhook Telegram
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    railway_url = os.getenv("RAILWAY_URL")
+    if token and railway_url:
+        webhook_url = f"{railway_url.rstrip('/')}/webhook/telegram"
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.post(
+                    f"https://api.telegram.org/bot{token}/setWebhook",
+                    json={"url": webhook_url}
+                )
+            except Exception:
+                pass
 
 
 @app.on_event("shutdown")
@@ -371,6 +386,75 @@ async def scan_volleyball():
         "value_bets_found": len(results),
         "results": results
     }
+
+
+@app.post("/webhook/telegram")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    message = data.get("message", {})
+    chat_id = str(message.get("chat", {}).get("id"))
+    text = message.get("text", "")
+    
+    authorized_id = os.getenv("TELEGRAM_CHAT_ID")
+    if chat_id != authorized_id:
+        return {"status": "unauthorized"}
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    async with httpx.AsyncClient() as client:
+        if text == "/scan":
+            # Déclenchement scan immédiat
+            leagues = [39, 140, 78, 135, 61, 2]
+            seasons = [2025, 2024]
+            await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "🔄 Scan global en cours..."})
+            res = await daily_scan(leagues, seasons)
+            msg = f"✅ Scan terminé.\nAnalysés : {res['matches_analyzed']}\nValue Bets : {res['value_bets_found']}"
+            await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": msg})
+
+        elif text == "/stats":
+            # Récupérer stats 7 derniers jours depuis Supabase
+            url = os.getenv("SUPABASE_URL")
+            key = os.getenv("SUPABASE_ANON_KEY")
+            seven_days_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+            
+            resp = await client.get(
+                f"{url}/rest/v1/predictions",
+                headers={"apikey": key, "Authorization": f"Bearer {key}"},
+                params={"date": f"gte.{seven_days_ago}", "status": "neq.pending"}
+            )
+            if resp.status_code == 200:
+                preds = resp.json()
+                won = [p for p in preds if p["status"] == "won"]
+                lost = [p for p in preds if p["status"] == "lost"]
+                total_staked = sum(p.get("kelly_stake", 0) for p in preds)
+                total_profit = sum((p.get("kelly_stake", 0) * p.get("odds", 0)) - p.get("kelly_stake", 0) for p in won) - sum(p.get("kelly_stake", 0) for p in lost)
+                roi = (total_profit / total_staked * 100) if total_staked > 0 else 0
+                
+                msg = f"📊 **BILAN 7 DERNIERS JOURS**\n\n✅ Gagnés : {len(won)}\n❌ Perdus : {len(lost)}\n📈 ROI : {round(roi, 1)}%\n💰 Profit : {round(total_profit, 2)}$"
+                await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
+
+        elif text == "/bankroll":
+            # Calcul bankroll total (1000 base + profit cumulé)
+            url = os.getenv("SUPABASE_URL")
+            key = os.getenv("SUPABASE_ANON_KEY")
+            resp = await client.get(
+                f"{url}/rest/v1/predictions",
+                headers={"apikey": key, "Authorization": f"Bearer {key}"},
+                params={"status": "neq.pending"}
+            )
+            if resp.status_code == 200:
+                preds = resp.json()
+                won = [p for p in preds if p["status"] == "won"]
+                lost = [p for p in preds if p["status"] == "lost"]
+                profit = sum((p.get("kelly_stake", 0) * p.get("odds", 0)) - p.get("kelly_stake", 0) for p in won) - sum(p.get("kelly_stake", 0) for p in lost)
+                bankroll = 1000 + profit
+                msg = f"💰 **BANKROLL ACTUEL**\n\nTotal : **{round(bankroll, 2)}$**\nProfit cumulé : {round(profit, 2)}$"
+                await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
+
+        elif text == "/help":
+            msg = "🤖 **Commandes disponibles :**\n\n/scan - Lancer un scan immédiat\n/stats - Bilan des 7 derniers jours\n/bankroll - Voir le capital actuel\n/help - Liste des commandes"
+            await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
+
+    return {"status": "ok"}
 
 
 @app.post("/test-telegram")
