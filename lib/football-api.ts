@@ -64,7 +64,6 @@ export async function getTodayMatches(specificDate?: string): Promise<Match[]> {
       )
       for (const m of data.matches ?? []) {
         results.push({
-...
           id: m.id,
           league: leagueName,
           leagueId: REVERSE_LEAGUE_IDS[leagueId] || 0,
