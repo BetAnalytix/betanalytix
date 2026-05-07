@@ -19,6 +19,9 @@ TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 FOOTBALL_DATA_KEY  = os.getenv("FOOTBALL_DATA_API_KEY", "")
 FOOTBALL_DATA_BASE = "https://api.football-data.org/v4"
 
+SUPABASE_URL      = os.getenv("SUPABASE_URL", "")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+
 LEAGUES_MAP = {
     39:  {"fd_id": 2021, "name": "Premier League",   "flag": "🏴󠁧󠁢󠁥󠁮󠁧󠁿"},
     140: {"fd_id": 2014, "name": "La Liga",          "flag": "🇪🇸"},
@@ -37,6 +40,40 @@ def calculate_score(edge: float, prob: float, form: float, odds: float) -> float
     s_form = form * 20
     s_odds = max(0, 1 - abs(odds - 2.0)) * 10
     return round(s_edge + s_prob + s_form + s_odds, 1)
+
+async def save_prediction_to_supabase(vb: dict) -> None:
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return
+
+    payload = {
+        "date":             datetime.utcnow().strftime("%Y-%m-%d"),
+        "sport":            vb.get("sport", "Unknown"),
+        "home_team":        vb["home_team"],
+        "away_team":        vb["away_team"],
+        "bet":              vb["bet_side"],
+        "odds":             vb["odds"],
+        "model_prob":       vb["model_prob"],
+        "edge":             vb["edge"],
+        "confidence_score": vb.get("score", 0.0),
+        "kelly_stake":      vb["kelly_stake"],
+        "status":           "pending",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/predictions",
+                headers={
+                    "apikey":        SUPABASE_ANON_KEY,
+                    "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+                    "Content-Type":  "application/json",
+                    "Prefer":        "return=minimal",
+                },
+                json=payload,
+            )
+    except Exception:
+        pass
+
 
 async def send_combined_alert(candidates: list[dict]) -> bool:
     if not candidates:
@@ -65,6 +102,10 @@ async def send_combined_alert(candidates: list[dict]) -> bool:
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
         )
+
+    if resp.status_code == 200:
+        await asyncio.gather(*[save_prediction_to_supabase(vb) for vb in candidates[:5]])
+
     return resp.status_code == 200
 
 async def send_value_bet_alert(value_bet_result: dict) -> bool:
