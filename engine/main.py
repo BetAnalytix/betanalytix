@@ -18,6 +18,10 @@ from scheduler import start_scheduler, stop_scheduler
 
 load_dotenv()
 
+# Flags et Cooldown pour le Webhook
+is_scanning = False
+last_scan_time = None
+
 FOOTBALL_DATA_KEY  = os.getenv("FOOTBALL_DATA_API_KEY")
 FOOTBALL_DATA_BASE = "https://api.football-data.org/v4"
 
@@ -390,25 +394,56 @@ async def scan_volleyball():
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
+    global is_scanning, last_scan_time
+    
     data = await request.json()
     message = data.get("message", {})
-    chat_id = str(message.get("chat", {}).get("id"))
-    text = message.get("text", "")
     
+    # Sécurité : ignorer les messages des bots et les messages non-commandes
+    if message.get("from", {}).get("is_bot"):
+        return {"status": "ignored_bot"}
+    
+    text = message.get("text", "")
+    if not text.startswith("/"):
+        return {"status": "not_a_command"}
+
+    chat_id = str(message.get("chat", {}).get("id"))
     authorized_id = os.getenv("TELEGRAM_CHAT_ID")
     if chat_id != authorized_id:
         return {"status": "unauthorized"}
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
+    
     async with httpx.AsyncClient() as client:
         if text == "/scan":
-            # Déclenchement scan immédiat
-            leagues = [39, 140, 78, 135, 61, 2]
-            seasons = [2025, 2024]
-            await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "🔄 Scan global en cours..."})
-            res = await daily_scan(leagues, seasons)
-            msg = f"✅ Scan terminé.\nAnalysés : {res['matches_analyzed']}\nValue Bets : {res['value_bets_found']}"
-            await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": msg})
+            now = datetime.utcnow()
+            if is_scanning:
+                await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "⏳ Un scan est déjà en cours. Veuillez patienter."})
+                return {"status": "already_scanning"}
+            
+            if last_scan_time and (now - last_scan_time) < timedelta(minutes=5):
+                wait_min = 5 - int((now - last_scan_time).total_seconds() / 60)
+                await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"🛑 Cooldown actif. Réessayez dans {wait_min} minute(s)."})
+                return {"status": "cooldown"}
+
+            # Lancement du scan en arrière-plan
+            is_scanning = True
+            last_scan_time = now
+            
+            async def run_async_scan(cid, tkn):
+                global is_scanning
+                try:
+                    leagues = [39, 140, 78, 135, 61, 2]
+                    seasons = [2025, 2024]
+                    res = await daily_scan(leagues, seasons)
+                    msg = f"✅ Scan terminé.\nAnalysés : {res['matches_analyzed']}\nValue Bets : {res['value_bets_found']}"
+                    async with httpx.AsyncClient() as c:
+                        await c.post(f"https://api.telegram.org/bot{tkn}/sendMessage", json={"chat_id": cid, "text": msg})
+                finally:
+                    is_scanning = False
+
+            asyncio.create_task(run_async_scan(chat_id, token))
+            await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "🚀 Scan global lancé en arrière-plan. Vous recevrez les résultats d'ici quelques minutes."})
 
         elif text == "/stats":
             # Récupérer stats 7 derniers jours depuis Supabase
