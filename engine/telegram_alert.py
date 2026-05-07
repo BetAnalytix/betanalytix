@@ -5,11 +5,12 @@ from datetime import datetime
 import httpx
 from dotenv import load_dotenv
 
-from poisson_model import predict_match, predict_mlb, predict_nba, predict_nhl
+from poisson_model import predict_match, predict_mlb, predict_nba, predict_nhl, predict_tennis
 from team_stats import get_league_averages, get_team_stats
 from mlb_stats import get_mlb_today_matches, get_mlb_team_stats, get_mlb_league_averages
 from nba_stats import get_nba_today_matches, get_nba_team_stats, get_nba_league_averages
 from nhl_stats import get_nhl_today_matches, get_nhl_team_stats, get_nhl_league_averages
+from tennis_stats import get_tennis_today_matches
 from value_bet import detect_value_bet, get_odds, kelly_stake, simulate_odds, get_real_odds, find_match_odds
 
 load_dotenv()
@@ -85,6 +86,7 @@ async def send_combined_alert(candidates: list[dict]) -> bool:
         if vb.get("sport") == "MLB": sport_icon = "⚾"
         elif vb.get("sport") == "NBA": sport_icon = "🏀"
         elif vb.get("sport") == "NHL": sport_icon = "🏒"
+        elif vb.get("sport") == "Tennis": sport_icon = "🎾"
         
         bet_team = vb["home_team"] if vb["bet_side"] == "home" else vb["away_team"]
         
@@ -286,16 +288,62 @@ async def analyze_nhl_match(match: dict, season: str = "20232024", real_odds_lis
         "score": score, "sport": "NHL", "league_flag": "🏒", "league": "NHL"
     }
 
+async def analyze_tennis_match(match: dict, real_odds_list: list = None) -> dict:
+    try:
+        # Simulation/Récupération stats simplifiée pour le prototype
+        p1_elo = 1600 # Base simulée
+        p2_elo = 1550 # Base simulée
+        
+        # Le modèle attend Elo, H2H, Fatigue
+        proba = predict_tennis(
+            p1_elo_surface=p1_elo,
+            p2_elo_surface=p2_elo,
+            h2h_p1_wins=2,
+            h2h_p2_wins=1,
+            p1_fatigue=1,
+            p2_fatigue=2
+        )
+        model_probs = {"home": proba["prob_home_win"], "away": proba["prob_away_win"]}
+        
+        odds = None
+        if real_odds_list:
+            odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
+            
+        if not odds:
+            return {"found": False, "reason": "cotes réelles introuvables"}
+
+        vb = detect_value_bet(model_probs, odds)
+
+        if not vb:
+            return {"found": False, "reason": "pas de value bet"}
+
+        # Form score simulé
+        form_score = 0.75
+        score = calculate_score(vb["edge"], vb["model_prob"], form_score, vb["odds"])
+
+        return {
+            "found": True, "home_team": match["home_name"], "away_team": match["away_name"],
+            "bet_side": vb["bet"], "model_prob": vb["model_prob"], "odds": vb["odds"],
+            "edge": vb["edge"], "kelly_stake": kelly_stake(vb["model_prob"], vb["odds"], bankroll=1000.0),
+            "score": score, "sport": "Tennis", "league_flag": "🎾", "league": "ATP/WTA"
+        }
+    except Exception as e:
+        return {"found": False, "reason": f"erreur stats Tennis: {e}"}
+
 async def daily_scan(leagues: list[int], seasons: list[int]) -> dict:
     candidates: list[dict] = []
     matches_analyzed = 0
     
     # --- PRÉ-CHARGEMENT DES COTES RÉELLES ---
-    mlb_odds, nba_odds, nhl_odds = await asyncio.gather(
+    mlb_odds, nba_odds, nhl_odds, atp_odds, wta_odds = await asyncio.gather(
         get_real_odds("baseball_mlb"),
         get_real_odds("basketball_nba"),
-        get_real_odds("icehockey_nhl")
+        get_real_odds("icehockey_nhl"),
+        get_real_odds("tennis_atp"),
+        get_real_odds("tennis_wta")
     )
+    
+    tennis_odds = atp_odds + wta_odds
     
     # --- SCAN FOOTBALL ---
     for league_id in leagues:
@@ -334,6 +382,15 @@ async def daily_scan(leagues: list[int], seasons: list[int]) -> dict:
     for m in nhl_matches:
         matches_analyzed += 1
         res = await analyze_nhl_match(m, real_odds_list=nhl_odds)
+        if res["found"]:
+            res.update({"match_datetime": m["match_datetime"]})
+            candidates.append(res)
+
+    # --- SCAN TENNIS ---
+    tennis_matches = await get_tennis_today_matches()
+    for m in tennis_matches:
+        matches_analyzed += 1
+        res = await analyze_tennis_match(m, real_odds_list=tennis_odds)
         if res["found"]:
             res.update({"match_datetime": m["match_datetime"]})
             candidates.append(res)

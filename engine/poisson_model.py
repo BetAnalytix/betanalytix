@@ -165,3 +165,34 @@ def predict_nhl(
         "prob_draw": 0.0,
         "predicted_score": f"{int(best_i)}-{int(best_j)}",
     }
+
+def predict_tennis(
+    p1_elo_surface: float,
+    p2_elo_surface: float,
+    h2h_p1_wins: int,
+    h2h_p2_wins: int,
+    p1_fatigue: int,
+    p2_fatigue: int
+) -> dict:
+    """
+    Modèle Tennis Elo surface-specific + H2H + Fatigue.
+    """
+    # Ajustement Elo par H2H (Bonus 15 pts par victoire nette d'écart)
+    h2h_diff = h2h_p1_wins - h2h_p2_wins
+    elo1 = p1_elo_surface + (h2h_diff * 15)
+    elo2 = p2_elo_surface - (h2h_diff * 15)
+    
+    # Ajustement Fatigue (Malus 10 pts par match joué cette semaine)
+    elo1 -= (p1_fatigue * 10)
+    elo2 -= (p2_fatigue * 10)
+    
+    # Probabilité Elo standard
+    prob1 = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
+    prob2 = 1 - prob1
+    
+    return {
+        "prob_home_win": round(prob1, 4),
+        "prob_away_win": round(prob2, 4),
+        "prob_draw": 0.0,
+        "elo_diff": round(elo1 - elo2, 1)
+    }

@@ -6,10 +6,11 @@ from dotenv import load_dotenv
 from team_stats import get_team_stats, get_league_averages
 from poisson_model import predict_match
 from value_bet import get_odds, simulate_odds, detect_value_bet, kelly_stake, get_real_odds
-from telegram_alert import daily_scan, send_value_bet_alert, analyze_mlb_match, analyze_nba_match, analyze_nhl_match
+from telegram_alert import daily_scan, send_value_bet_alert, analyze_mlb_match, analyze_nba_match, analyze_nhl_match, analyze_tennis_match
 from mlb_stats import get_mlb_today_matches
 from nba_stats import get_nba_today_matches
 from nhl_stats import get_nhl_today_matches
+from tennis_stats import get_tennis_today_matches
 from scheduler import start_scheduler, stop_scheduler
 
 load_dotenv()
@@ -305,6 +306,27 @@ async def scan_nhl(season: str = Query("20232024", description="Saison NHL")):
     
     return {
         "sport": "NHL",
+        "matches_analyzed": len(matches),
+        "value_bets_found": len(results),
+        "results": results
+    }
+
+
+@app.get("/scan-tennis")
+async def scan_tennis():
+    matches = await get_tennis_today_matches()
+    atp_odds = await get_real_odds("tennis_atp")
+    wta_odds = await get_real_odds("tennis_wta")
+    odds = atp_odds + wta_odds
+    
+    results = []
+    for m in matches:
+        res = await analyze_tennis_match(m, real_odds_list=odds)
+        if res["found"]:
+            results.append(res)
+    
+    return {
+        "sport": "Tennis",
         "matches_analyzed": len(matches),
         "value_bets_found": len(results),
         "results": results
