@@ -100,6 +100,98 @@ async def check_nba_result(pred: dict):
                         return "won" if pred["bet"] == winner else "lost"
     return "pending"
 
+async def check_mlb_result(pred: dict):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            "https://statsapi.mlb.com/api/v1/schedule",
+            params={"sportId": 1, "date": today}
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for date_info in data.get("dates", []):
+                for g in date_info.get("games", []):
+                    if pred["home_team"] in g["teams"]["home"]["team"]["name"]:
+                        status = g["status"]["abstractGameState"]
+                        if status == "Final":
+                            h_score = g["teams"]["home"]["score"]
+                            a_score = g["teams"]["away"]["score"]
+                            winner = "home" if h_score > a_score else "away"
+                            return "won" if pred["bet"] == winner else "lost"
+    return "pending"
+
+async def check_nhl_result(pred: dict):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(f"https://api-web.nhle.com/v1/schedule/{today}")
+        if resp.status_code == 200:
+            data = resp.json()
+            for day in data.get("gameWeek", []):
+                if day.get("date") == today:
+                    for g in day.get("games", []):
+                        if pred["home_team"] in g["homeTeam"]["placeName"]["default"]:
+                            if g["gameState"] in ["FINAL", "OFF"]:
+                                h_score = g["homeTeam"]["score"]
+                                a_score = g["awayTeam"]["score"]
+                                winner = "home" if h_score > a_score else "away"
+                                return "won" if pred["bet"] == winner else "lost"
+    return "pending"
+
+async def check_nfl_result(pred: dict):
+    today = datetime.utcnow().strftime("%Y%m%d")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
+            params={"dates": today}
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for event in data.get("events", []):
+                competition = event.get("competitions", [{}])[0]
+                h_team = next((t for t in competition.get("competitors", []) if t.get("homeAway") == "home"), None)
+                if h_team and pred["home_team"] in h_team["team"]["displayName"]:
+                    if event["status"]["type"]["completed"]:
+                        a_team = next((t for t in competition.get("competitors", []) if t.get("homeAway") == "away"), None)
+                        h_score = int(h_team["score"])
+                        a_score = int(a_team["score"])
+                        winner = "home" if h_score > a_score else "away"
+                        return "won" if pred["bet"] == winner else "lost"
+    return "pending"
+
+async def check_tennis_result(pred: dict):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    if not os.getenv("SPORTSDATA_KEY"): return "pending"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            f"https://api.sportsdata.io/v3/tennis/stats/json/MatchStatsByDate/{today}",
+            params={"key": os.getenv("SPORTSDATA_KEY")}
+        )
+        if resp.status_code == 200:
+            for m in resp.json():
+                if pred["home_team"] == m["Player1Name"]:
+                    if m["Status"] == "Final":
+                        winner_id = m["WinnerReceiverId"]
+                        winner_side = "home" if winner_id == m["Player1Id"] else "away"
+                        return "won" if pred["bet"] == winner_side else "lost"
+    return "pending"
+
+async def check_volleyball_result(pred: dict):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    if not os.getenv("SPORTSDATA_KEY"): return "pending"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            f"https://api.sportsdata.io/v3/volleyball/stats/json/MatchStatsByDate/{today}",
+            params={"key": os.getenv("SPORTSDATA_KEY")}
+        )
+        if resp.status_code == 200:
+            for m in resp.json():
+                if pred["home_team"] == m["HomeTeamName"]:
+                    if m["Status"] == "Final":
+                        winner_id = m["WinnerId"]
+                        winner_side = "home" if winner_id == m["HomeTeamId"] else "away"
+                        return "won" if pred["bet"] == winner_side else "lost"
+    return "pending"
+
 async def check_daily_results():
     logger.info("Scheduler: vérification des résultats du jour...")
     pending = await get_pending_predictions()
@@ -111,6 +203,7 @@ async def check_daily_results():
     total_staked = 0
     total_returned = 0
     won_count = 0
+    date_str = datetime.utcnow().strftime("%Y-%m-%d")
 
     for pred in pending:
         status = "pending"
@@ -120,11 +213,16 @@ async def check_daily_results():
             status = await check_football_result(pred)
         elif sport == "NBA":
             status = await check_nba_result(pred)
-        # Pour les autres sports, simulation ou placeholder pour le moment
-        elif sport in ["MLB", "NHL", "Tennis"]:
-            # Simulation pour le prototype si API non implémentée pour les résultats
-            import random
-            status = random.choice(["won", "lost"])
+        elif sport == "MLB":
+            status = await check_mlb_result(pred)
+        elif sport == "NHL":
+            status = await check_nhl_result(pred)
+        elif sport == "NFL":
+            status = await check_nfl_result(pred)
+        elif sport == "Tennis":
+            status = await check_tennis_result(pred)
+        elif sport == "Volleyball":
+            status = await check_volleyball_result(pred)
 
         if status != "pending":
             await update_prediction_status(pred["id"], status)
@@ -134,8 +232,15 @@ async def check_daily_results():
             total_staked += stake
             
             icon = "✅ GAGNÉ" if status == "won" else "❌ PERDU"
-            profit_text = ""
+            sport_icon = "⚽"
+            if sport == "NBA": sport_icon = "🏀"
+            elif sport == "MLB": sport_icon = "⚾"
+            elif sport == "NHL": sport_icon = "🏒"
+            elif sport == "NFL": sport_icon = "🏈"
+            elif sport == "Tennis": sport_icon = "🎾"
+            elif sport == "Volleyball": sport_icon = "🏐"
             
+            profit_text = ""
             if status == "won":
                 won_count += 1
                 returned = stake * odds
@@ -144,17 +249,27 @@ async def check_daily_results():
             else:
                 profit_text = f"Mise : {stake}$ → Perdu : -{stake}$"
             
-            results_report.append(f"{icon} — {pred['home_team']} vs {pred['away_team']}\n   {profit_text}")
+            results_report.append(
+                f"{icon} — {pred['home_team']} vs {pred['away_team']}\n"
+                f"   Sport : {sport_icon} {sport}\n"
+                f"   {profit_text}"
+            )
 
     if results_report:
         net_profit = total_returned - total_staked
         roi = (net_profit / total_staked * 100) if total_staked > 0 else 0
         
-        msg = "📊 **RÉSULTATS DU JOUR**\n\n"
+        # Estimation Bankroll (Base 1000 + profit du jour pour le prototype)
+        # Idéalement on fetcherait le total_balance réel
+        estimated_bankroll = 1000 + net_profit
+        
+        msg = f"📊 **RÉSULTATS DU JOUR — {date_str}**\n\n"
         msg += "\n\n".join(results_report)
         msg += f"\n\n📈 **Bilan du jour :**\n"
-        msg += f"   Gagnés : {won_count}/{len(results_report)}\n"
-        msg += f"   ROI : {round(roi, 1)}% | Profit net : {round(net_profit, 2)}$"
+        msg += f"Gagnés : {won_count}/{len(results_report)}\n"
+        msg += f"ROI : {round(roi, 1)}%\n"
+        msg += f"Profit net : +{round(net_profit, 2)}$\n"
+        msg += f"Bankroll estimé : {round(estimated_bankroll, 2)}$"
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             await client.post(
