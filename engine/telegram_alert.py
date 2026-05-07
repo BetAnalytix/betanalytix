@@ -5,9 +5,12 @@ from datetime import datetime
 import httpx
 from dotenv import load_dotenv
 
-from poisson_model import predict_match
+from poisson_model import predict_match, predict_mlb, predict_nba, predict_nhl
 from team_stats import get_league_averages, get_team_stats
-from value_bet import detect_value_bet, get_odds, kelly_stake, simulate_odds
+from mlb_stats import get_mlb_today_matches, get_mlb_team_stats, get_mlb_league_averages
+from nba_stats import get_nba_today_matches, get_nba_team_stats, get_nba_league_averages
+from nhl_stats import get_nhl_today_matches, get_nhl_team_stats, get_nhl_league_averages
+from value_bet import detect_value_bet, get_odds, kelly_stake, simulate_odds, get_real_odds, find_match_odds
 
 load_dotenv()
 
@@ -25,33 +28,47 @@ LEAGUES_MAP = {
     2:   {"fd_id": 2001, "name": "Champions League", "flag": "🇪🇺"},
 }
 
+def calculate_score(edge: float, prob: float, form: float, odds: float) -> float:
+    """
+    Calcule un score 0-100 : Edge(40%), Prob(30%), Forme(20%), Cote proche 2.00(10%).
+    """
+    s_edge = min(edge / 0.15, 1.0) * 40
+    s_prob = min(prob / 0.80, 1.0) * 30
+    s_form = form * 20
+    s_odds = max(0, 1 - abs(odds - 2.0)) * 10
+    return round(s_edge + s_prob + s_form + s_odds, 1)
 
-async def send_value_bet_alert(value_bet_result: dict) -> bool:
-    vb = value_bet_result
-    bet_team = vb["home_team"] if vb["bet_side"] == "home" else vb["away_team"]
+async def send_combined_alert(candidates: list[dict]) -> bool:
+    if not candidates:
+        return False
 
-    try:
-        dt = datetime.fromisoformat(vb["match_datetime"].replace("Z", "+00:00"))
-        date_str = dt.strftime("%d/%m/%Y %H:%M")
-    except Exception:
-        date_str = vb.get("match_datetime", "—")
-
-    text = (
-        f"⚽ VALUE BET DÉTECTÉE 🏆 {vb['league_flag']} {vb['league']}\n"
-        f"🆚 {vb['home_team']} vs {vb['away_team']}\n"
-        f"📅 {date_str} ✅ Pari : Victoire {bet_team}\n"
-        f"📊 Probabilité modèle : {round(vb['model_prob'] * 100, 1)}% 💰 Cote : {vb['odds']}\n"
-        f"📈 Edge : +{round(vb['edge'] * 100, 1)}%\n"
-        f"💵 Mise Kelly : {vb['kelly_stake']}$ / 1000$ ⚠️ Outil personnel — pas un conseil financier"
-    )
+    text = "🚀 **TOP 5 VALUE BETS DU JOUR** 🚀\n\n"
+    for i, vb in enumerate(candidates[:5]):
+        sport_icon = "⚽"
+        if vb.get("sport") == "MLB": sport_icon = "⚾"
+        elif vb.get("sport") == "NBA": sport_icon = "🏀"
+        elif vb.get("sport") == "NHL": sport_icon = "🏒"
+        
+        bet_team = vb["home_team"] if vb["bet_side"] == "home" else vb["away_team"]
+        
+        text += (
+            f"{i+1}. {sport_icon} {vb['league_flag']} **{vb['home_team']} vs {vb['away_team']}**\n"
+            f"   🎯 Pari : {bet_team} | 💰 Cote : {vb['odds']}\n"
+            f"   🔥 Score : {vb['score']}/100 | 📈 Edge : +{round(vb['edge'] * 100, 1)}%\n"
+            f"   📊 Prob : {round(vb['model_prob'] * 100, 1)}% | 💵 Mise : {vb['kelly_stake']}$\n\n"
+        )
+    
+    text += "⚠️ Outil personnel — pas un conseil financier"
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
         )
     return resp.status_code == 200
 
+async def send_value_bet_alert(value_bet_result: dict) -> bool:
+    return await send_combined_alert([value_bet_result])
 
 async def _get_today_fixtures(fd_league_id: int) -> list[dict]:
     today = datetime.utcnow().strftime("%Y-%m-%d")
@@ -64,7 +81,6 @@ async def _get_today_fixtures(fd_league_id: int) -> list[dict]:
     if resp.status_code != 200:
         return []
     return resp.json().get("matches", [])
-
 
 async def _analyze_match(
     home_id: int,
@@ -80,7 +96,7 @@ async def _analyze_match(
             get_league_averages(fd_league_id, season),
         )
     except Exception as e:
-        return {"found": False, "home_team": f"id:{home_id}", "away_team": f"id:{away_id}", "reason": f"erreur stats: {e}"}
+        return {"found": False, "reason": f"erreur stats: {e}"}
 
     home_name = home_stats["team_name"]
     away_name = away_stats["team_name"]
@@ -92,125 +108,206 @@ async def _analyze_match(
         league_avg_away=league_avgs["league_avg_away"],
     )
 
-    model_probs = {
-        "home": proba["prob_home_win"],
-        "draw": proba["prob_draw"],
-        "away": proba["prob_away_win"],
+    model_probs = {"home": proba["prob_home_win"], "draw": proba["prob_draw"], "away": proba["prob_away_win"]}
+    odds = await get_odds(fixture_id) if fixture_id else simulate_odds(model_probs)
+    vb = detect_value_bet(model_probs, odds)
+
+    if not vb:
+        return {"found": False, "reason": "pas de value bet"}
+
+    if not (1.80 <= vb["odds"] <= 2.50) or vb["model_prob"] < 0.55 or vb["edge"] < 0.07:
+        return {"found": False, "reason": "filtres non respectés"}
+
+    h_win_rate = home_stats["last_5"].count("W") / len(home_stats["last_5"]) if home_stats["last_5"] else 0.5
+    a_win_rate = away_stats["last_5"].count("W") / len(away_stats["last_5"]) if away_stats["last_5"] else 0.5
+    form_score = (h_win_rate + a_win_rate) / 2.0
+
+    score = calculate_score(vb["edge"], vb["model_prob"], form_score, vb["odds"])
+
+    return {
+        "found": True, "home_team": home_name, "away_team": away_name,
+        "bet_side": vb["bet"], "model_prob": vb["model_prob"], "odds": vb["odds"],
+        "edge": vb["edge"], "kelly_stake": kelly_stake(vb["model_prob"], vb["odds"], bankroll=1000.0),
+        "score": score, "sport": "Football"
     }
 
+async def analyze_mlb_match(match: dict, season: int = 2024, real_odds_list: list = None) -> dict:
+    try:
+        home_stats, away_stats, league_avg = await asyncio.gather(
+            get_mlb_team_stats(match["home_id"], season),
+            get_mlb_team_stats(match["away_id"], season),
+            get_mlb_league_averages(season)
+        )
+    except Exception as e:
+        return {"found": False, "reason": f"erreur stats MLB: {e}"}
+
+    if not home_stats or not away_stats:
+        return {"found": False, "reason": "stats manquantes"}
+
+    proba = predict_mlb(home_stats, away_stats, league_avg)
+    model_probs = {"home": proba["prob_home_win"], "away": proba["prob_away_win"]}
+    
     odds = None
-    if fixture_id:
-        odds = await get_odds(fixture_id)
-    if odds is None:
-        odds = simulate_odds(model_probs)
+    if real_odds_list:
+        odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
+    
+    if not odds:
+        return {"found": False, "reason": "cotes réelles introuvables"}
 
     vb = detect_value_bet(model_probs, odds)
+
     if not vb:
-        reasons = []
-        for side in ("home", "away"):
-            cote = odds.get(side)
-            prob = model_probs[side]
-            if cote is None:
-                continue
-            edge = prob - (1 / cote)
-            if not (1.80 <= cote <= 2.50):
-                reasons.append(f"{side}: cote {cote} hors plage [1.80-2.50]")
-            elif prob < 0.55:
-                reasons.append(f"{side}: prob {round(prob*100,1)}% < 55%")
-            elif edge < 0.07:
-                reasons.append(f"{side}: edge {round(edge*100,1)}% < 7%")
-        return {
-            "found":       False,
-            "home_team":   home_name,
-            "away_team":   away_name,
-            "model_probs": model_probs,
-            "odds":        {"home": odds["home"], "draw": odds["draw"], "away": odds["away"]},
-            "reason":      " | ".join(reasons) if reasons else "aucun candidat valide",
-        }
+        return {"found": False, "reason": "pas de value bet"}
+
+    form_score = (home_stats["form_score"] + away_stats["form_score"]) / 2.0
+    score = calculate_score(vb["edge"], vb["model_prob"], form_score, vb["odds"])
 
     return {
-        "found":       True,
-        "home_team":   home_name,
-        "away_team":   away_name,
-        "bet_side":    vb["bet"],
-        "model_prob":  vb["model_prob"],
-        "odds":        vb["odds"],
-        "edge":        vb["edge"],
-        "kelly_stake": kelly_stake(vb["model_prob"], vb["odds"], bankroll=1000.0),
+        "found": True, "home_team": match["home_name"], "away_team": match["away_name"],
+        "bet_side": vb["bet"], "model_prob": vb["model_prob"], "odds": vb["odds"],
+        "edge": vb["edge"], "kelly_stake": kelly_stake(vb["model_prob"], vb["odds"], bankroll=1000.0),
+        "score": score, "sport": "MLB", "league_flag": "🇺🇸", "league": "MLB"
     }
 
+async def analyze_nba_match(match: dict, season: int = 2023, real_odds_list: list = None) -> dict:
+    try:
+        home_stats, away_stats, league_avg = await asyncio.gather(
+            get_nba_team_stats(match["home_id"], season),
+            get_nba_team_stats(match["away_id"], season),
+            get_nba_league_averages(season)
+        )
+    except Exception as e:
+        return {"found": False, "reason": f"erreur stats NBA: {e}"}
 
-async def daily_scan(leagues: list[int], seasons: list[int]) -> dict:
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    matches_analyzed = 0
-    candidates: list[dict] = []
+    if not home_stats or not away_stats:
+        return {"found": False, "reason": "stats manquantes"}
 
-    print(f"\n{'='*60}")
-    print(f"SCAN DU JOUR - {today} | saisons {seasons}")
-    print(f"{'='*60}")
+    proba = predict_nba(home_stats, away_stats, league_avg)
+    model_probs = {"home": proba["prob_home_win"], "away": proba["prob_away_win"]}
+    
+    odds = None
+    if real_odds_list:
+        odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
+        
+    if not odds:
+        return {"found": False, "reason": "cotes réelles introuvables"}
 
-    for league_id in leagues:
-        meta = LEAGUES_MAP.get(league_id)
-        if not meta:
-            continue
+    vb = detect_value_bet(model_probs, odds)
 
-        fixtures = await _get_today_fixtures(meta["fd_id"])
-        print(f"\n[{meta['name']}] (fd_id={meta['fd_id']}) -> {len(fixtures)} match(s) trouves")
+    if not vb:
+        return {"found": False, "reason": "pas de value bet"}
 
-        for fixture in fixtures:
-            home_id   = fixture.get("homeTeam", {}).get("id")
-            away_id   = fixture.get("awayTeam", {}).get("id")
-            home_name = fixture.get("homeTeam", {}).get("name", "?")
-            away_name = fixture.get("awayTeam", {}).get("name", "?")
-            if not home_id or not away_id:
-                continue
-
-            # Essaie les saisons dans l'ordre — s'arrete au premier succes de stats
-            for season in seasons:
-                matches_analyzed += 1
-                print(f"  [MATCH] {home_name} vs {away_name} (s{season}) -> analyse...")
-                result = await _analyze_match(home_id, away_id, meta["fd_id"], season)
-
-                if not result["found"]:
-                    if "erreur stats" in result["reason"]:
-                        print(f"  [SKIP]  s{season} - {result['reason']}")
-                        continue  # aucune donnee pour cette saison, essaie la suivante
-                    # Stats valides mais pas de value bet
-                    print(f"  [NON]   Rejete (s{season}) - {result['reason']}")
-                    if "model_probs" in result:
-                        p = result["model_probs"]
-                        o = result["odds"]
-                        print(f"          Probs : dom={round(p['home']*100,1)}%  nul={round(p['draw']*100,1)}%  ext={round(p['away']*100,1)}%")
-                        print(f"          Cotes : dom={o['home']}  nul={o['draw']}  ext={o['away']}")
-                    break  # analyse valide, pas besoin d'essayer d'autres saisons
-
-                print(f"  [OUI]   VALUE BET : {result['bet_side']} | edge={round(result['edge']*100,1)}% | cote={result['odds']} | Kelly={result['kelly_stake']}$ (s{season})")
-                candidate = {k: v for k, v in result.items() if k != "found"}
-                candidate.update({
-                    "league":         meta["name"],
-                    "league_flag":    meta["flag"],
-                    "match_datetime": fixture.get("utcDate", today),
-                    "season":         season,
-                })
-                candidates.append(candidate)
-                break  # value bet trouve, pas besoin d'essayer d'autres saisons
-
-    candidates.sort(key=lambda x: x["edge"], reverse=True)
-    top_3 = candidates[:3]
-
-    alerts_sent = 0
-    for vb in top_3:
-        if await send_value_bet_alert(vb):
-            alerts_sent += 1
-
-    print(f"\n{'='*60}")
-    print(f"RESUME : {matches_analyzed} analyses | {len(candidates)} value bet(s) | {alerts_sent} alerte(s) Telegram")
-    print(f"{'='*60}\n")
+    form_score = (home_stats["form_score"] + away_stats["form_score"]) / 2.0
+    score = calculate_score(vb["edge"], vb["model_prob"], form_score, vb["odds"])
 
     return {
-        "date":             today,
+        "found": True, "home_team": match["home_name"], "away_team": match["away_name"],
+        "bet_side": vb["bet"], "model_prob": vb["model_prob"], "odds": vb["odds"],
+        "edge": vb["edge"], "kelly_stake": kelly_stake(vb["model_prob"], vb["odds"], bankroll=1000.0),
+        "score": score, "sport": "NBA", "league_flag": "🇺🇸", "league": "NBA"
+    }
+
+async def analyze_nhl_match(match: dict, season: str = "20232024", real_odds_list: list = None) -> dict:
+    try:
+        home_stats, away_stats, league_avg = await asyncio.gather(
+            get_nhl_team_stats(match["home_abbr"], season),
+            get_nhl_team_stats(match["away_abbr"], season),
+            get_nhl_league_averages()
+        )
+    except Exception as e:
+        return {"found": False, "reason": f"erreur stats NHL: {e}"}
+
+    if not home_stats or not away_stats:
+        return {"found": False, "reason": "stats manquantes"}
+
+    proba = predict_nhl(home_stats, away_stats, league_avg)
+    model_probs = {"home": proba["prob_home_win"], "away": proba["prob_away_win"]}
+    
+    odds = None
+    if real_odds_list:
+        odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
+        
+    if not odds:
+        return {"found": False, "reason": "cotes réelles introuvables"}
+
+    vb = detect_value_bet(model_probs, odds)
+
+    if not vb:
+        return {"found": False, "reason": "pas de value bet"}
+
+    form_score = (home_stats["form_score"] + away_stats["form_score"]) / 2.0
+    score = calculate_score(vb["edge"], vb["model_prob"], form_score, vb["odds"])
+
+    return {
+        "found": True, "home_team": match["home_name"], "away_team": match["away_name"],
+        "bet_side": vb["bet"], "model_prob": vb["model_prob"], "odds": vb["odds"],
+        "edge": vb["edge"], "kelly_stake": kelly_stake(vb["model_prob"], vb["odds"], bankroll=1000.0),
+        "score": score, "sport": "NHL", "league_flag": "🏒", "league": "NHL"
+    }
+
+async def daily_scan(leagues: list[int], seasons: list[int]) -> dict:
+    candidates: list[dict] = []
+    matches_analyzed = 0
+    
+    # --- PRÉ-CHARGEMENT DES COTES RÉELLES ---
+    mlb_odds, nba_odds, nhl_odds = await asyncio.gather(
+        get_real_odds("baseball_mlb"),
+        get_real_odds("basketball_nba"),
+        get_real_odds("icehockey_nhl")
+    )
+    
+    # --- SCAN FOOTBALL ---
+    for league_id in leagues:
+        meta = LEAGUES_MAP.get(league_id)
+        if not meta: continue
+        fixtures = await _get_today_fixtures(meta["fd_id"])
+        for f in fixtures:
+            matches_analyzed += 1
+            for s in seasons:
+                res = await _analyze_match(f.get("homeTeam", {}).get("id"), f.get("awayTeam", {}).get("id"), meta["fd_id"], s)
+                if res["found"]:
+                    res.update({"league": meta["name"], "league_flag": meta["flag"], "match_datetime": f["utcDate"]})
+                    candidates.append(res)
+                    break
+
+    # --- SCAN MLB ---
+    mlb_matches = await get_mlb_today_matches()
+    for m in mlb_matches:
+        matches_analyzed += 1
+        res = await analyze_mlb_match(m, real_odds_list=mlb_odds)
+        if res["found"]:
+            res.update({"match_datetime": m["match_datetime"]})
+            candidates.append(res)
+
+    # --- SCAN NBA ---
+    nba_matches = await get_nba_today_matches()
+    for m in nba_matches:
+        matches_analyzed += 1
+        res = await analyze_nba_match(m, real_odds_list=nba_odds)
+        if res["found"]:
+            res.update({"match_datetime": m["match_datetime"]})
+            candidates.append(res)
+
+    # --- SCAN NHL ---
+    nhl_matches = await get_nhl_today_matches()
+    for m in nhl_matches:
+        matches_analyzed += 1
+        res = await analyze_nhl_match(m, real_odds_list=nhl_odds)
+        if res["found"]:
+            res.update({"match_datetime": m["match_datetime"]})
+            candidates.append(res)
+
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    
+    top_5 = candidates[:5]
+    alerts_sent = 1 if top_5 else 0
+    if top_5:
+        await send_combined_alert(top_5)
+
+    return {
+        "date": datetime.utcnow().strftime("%Y-%m-%d"),
         "matches_analyzed": matches_analyzed,
         "value_bets_found": len(candidates),
-        "alerts_sent":      alerts_sent,
-        "top_value_bets":   top_3,
+        "alerts_sent": alerts_sent,
+        "top_value_bets": top_5
     }

@@ -5,8 +5,11 @@ import os
 from dotenv import load_dotenv
 from team_stats import get_team_stats, get_league_averages
 from poisson_model import predict_match
-from value_bet import get_odds, simulate_odds, detect_value_bet, kelly_stake
-from telegram_alert import daily_scan, send_value_bet_alert
+from value_bet import get_odds, simulate_odds, detect_value_bet, kelly_stake, get_real_odds
+from telegram_alert import daily_scan, send_value_bet_alert, analyze_mlb_match, analyze_nba_match, analyze_nhl_match
+from mlb_stats import get_mlb_today_matches
+from nba_stats import get_nba_today_matches
+from nhl_stats import get_nhl_today_matches
 from scheduler import start_scheduler, stop_scheduler
 
 load_dotenv()
@@ -184,7 +187,7 @@ async def predict(
     home_team_id: int = Query(..., description="ID équipe domicile (football-data.org)"),
     away_team_id: int = Query(..., description="ID équipe extérieur (football-data.org)"),
     league_id:    int = Query(..., description="ID ligue (ex: 39 = Premier League)"),
-    season:       int = Query(2026, description="Saison"),
+    season:       int = Query(2024, description="Saison"),
 ):
     if league_id not in LEAGUES:
         raise HTTPException(
@@ -254,6 +257,60 @@ async def scan_today(seasons: list[int] = Query(default=[2025, 2024], descriptio
     return await daily_scan(leagues, seasons)
 
 
+@app.get("/scan-mlb")
+async def scan_mlb(season: int = Query(2024, description="Saison MLB")):
+    matches = await get_mlb_today_matches()
+    odds = await get_real_odds("baseball_mlb")
+    results = []
+    for m in matches:
+        res = await analyze_mlb_match(m, season, real_odds_list=odds)
+        if res["found"]:
+            results.append(res)
+    
+    return {
+        "sport": "MLB",
+        "matches_analyzed": len(matches),
+        "value_bets_found": len(results),
+        "results": results
+    }
+
+
+@app.get("/scan-nba")
+async def scan_nba(season: int = Query(2023, description="Saison NBA")):
+    matches = await get_nba_today_matches()
+    odds = await get_real_odds("basketball_nba")
+    results = []
+    for m in matches:
+        res = await analyze_nba_match(m, season, real_odds_list=odds)
+        if res["found"]:
+            results.append(res)
+    
+    return {
+        "sport": "NBA",
+        "matches_analyzed": len(matches),
+        "value_bets_found": len(results),
+        "results": results
+    }
+
+
+@app.get("/scan-nhl")
+async def scan_nhl(season: str = Query("20232024", description="Saison NHL")):
+    matches = await get_nhl_today_matches()
+    odds = await get_real_odds("icehockey_nhl")
+    results = []
+    for m in matches:
+        res = await analyze_nhl_match(m, season, real_odds_list=odds)
+        if res["found"]:
+            results.append(res)
+    
+    return {
+        "sport": "NHL",
+        "matches_analyzed": len(matches),
+        "value_bets_found": len(results),
+        "results": results
+    }
+
+
 @app.post("/test-telegram")
 async def test_telegram():
     if not os.getenv("TELEGRAM_BOT_TOKEN") or not os.getenv("TELEGRAM_CHAT_ID"):
@@ -270,6 +327,7 @@ async def test_telegram():
         "odds":           1.95,
         "edge":           0.098,
         "kelly_stake":    18.5,
+        "score":          75.0,
     }
 
     ok = await send_value_bet_alert(sample)
@@ -283,7 +341,7 @@ async def analyze(
     home_team_id: int = Query(..., description="ID équipe domicile (football-data.org)"),
     away_team_id: int = Query(..., description="ID équipe extérieur (football-data.org)"),
     league_id:    int = Query(..., description="ID ligue (ex: 39 = Premier League)"),
-    season:       int = Query(2026, description="Saison"),
+    season:       int = Query(2024, description="Saison"),
     fixture_id:   int | None = Query(None, description="ID fixture API-Football (optionnel, pour cotes réelles)"),
 ):
     if league_id not in LEAGUES:

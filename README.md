@@ -1,36 +1,48 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🎯 BetAnalytix — Quad-Sport Value Betting Engine
 
-## Getting Started
+Moteur d'analyse prédictive et de détection de Value Bets couvrant le **Football**, la **NBA**, la **MLB** et la **NHL**.
 
-First, run the development server:
+## 🚀 Fonctionnalités Clés
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- **Multi-Sport IA** : 4 modèles statistiques dédiés :
+  - ⚽ **Football** : Modèle Poisson Dixon-Coles (1X2).
+  - ⚾ **MLB** : Loi de Poisson adaptée aux runs (sans nul).
+  - 🏀 **NBA** : Distribution de **Skellam** (optimisée pour les scores élevés).
+  - 🏒 **NHL** : Modèle Poisson pour le hockey (redistribution du nul).
+- **Power Score (0-100)** : Système de notation propriétaire basé sur l'Edge (40%), la Probabilité (30%), la Forme (20%) et l'Optimisation des Cotes (10%).
+- **Intelligence Marché** : Intégration de **The Odds API** pour des cotes en temps réel (NHL, NBA, MLB).
+- **Alertes Telegram Unifiées** : Scan global quotidien et envoi du **Top 5** des meilleures opportunités toutes catégories confondues.
+- **Filtres de Qualité Stricts** : Seuls les paris avec une Cote [1.80-2.50], une Probabilité >= 55% et un Edge >= 7% sont retenus.
+
+## 🛠 Structure du Projet
+
+- `/app` : Dashboard Next.js (Dashboard Football actuel).
+- `/engine` : Backend FastAPI (Le cœur de l'IA).
+  - `main.py` : API et Endpoints de scan.
+  - `poisson_model.py` : Logique mathématique (Poisson & Skellam).
+  - `telegram_alert.py` : Scanner global et système d'alertes.
+  - `*_stats.py` : Modules d'extraction de données (MLB, NBA, NHL, Football).
+
+## 📡 Endpoints API Backend
+
+- `GET /scan-today` : Scan complet Quad-Sport + Alerte Telegram.
+- `GET /scan-nba` : Analyse spécifique de la journée NBA.
+- `GET /scan-nhl` : Analyse spécifique de la journée NHL.
+- `GET /scan-mlb` : Analyse spécifique de la journée MLB.
+- `GET /analyze` : Analyse détaillée d'un match de Football.
+
+## ⚙️ Configuration (.env)
+
+Ajoutez vos clés dans `engine/.env` :
+```env
+FOOTBALL_DATA_API_KEY=your_key
+NBA_API_KEY=your_balldontlie_key
+ODDS_API_KEY=your_the_odds_api_key
+TELEGRAM_BOT_TOKEN=your_token
+TELEGRAM_CHAT_ID=your_id
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 🏁 Lancement rapide
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Utilisez le script `start_betanalytix.bat` à la racine pour lancer tout l'écosystème en un clic.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.

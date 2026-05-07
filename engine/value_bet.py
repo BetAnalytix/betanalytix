@@ -7,6 +7,9 @@ load_dotenv()
 API_FOOTBALL_KEY  = os.getenv("API_FOOTBALL_KEY", "")
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
+ODDS_API_KEY      = os.getenv("ODDS_API_KEY", "")
+ODDS_API_BASE     = "https://api.the-odds-api.com/v1"
+
 # Priorité bookmakers : Bet365 (1) > William Hill (2)
 TARGET_BOOKMAKERS = [1, 2]
 MARKET_NAME = "Match Winner"
@@ -78,33 +81,85 @@ async def get_odds(fixture_id: int) -> dict | None:
     }
 
 
+async def get_real_odds(sport_key: str) -> list[dict]:
+    """
+    Récupère les cotes pour tous les matchs d'un sport donné via The Odds API.
+    """
+    if not ODDS_API_KEY:
+        return []
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            f"{ODDS_API_BASE}/sports/{sport_key}/odds",
+            params={
+                "apiKey": ODDS_API_KEY,
+                "regions": "eu",
+                "markets": "h2h",
+                "oddsFormat": "decimal"
+            },
+        )
+
+    if resp.status_code != 200:
+        return []
+
+    return resp.json()
+
+
+def find_match_odds(odds_list: list[dict], home_team: str, away_team: str) -> dict | None:
+    """
+    Cherche les cotes d'un match spécifique dans la liste renvoyée par The Odds API.
+    """
+    # Flou artistique sur les noms d'équipes (parfois différents entre API stats et API cotes)
+    for match in odds_list:
+        if (home_team.lower() in match["home_team"].lower() or match["home_team"].lower() in home_team.lower()) and \
+           (away_team.lower() in match["away_team"].lower() or match["away_team"].lower() in away_team.lower()):
+            
+            # On prend le premier bookmaker disponible (souvent Bet365 ou William Hill en EU)
+            if not match["bookmakers"]: continue
+            
+            bm = match["bookmakers"][0]
+            market = next((m for m in bm["markets"] if m["key"] == "h2h"), None)
+            if not market: continue
+            
+            odds_map = {v["name"]: v["price"] for v in market["outcomes"]}
+            
+            # Identifier qui est Home et qui est Away dans the-odds-api
+            h_odd = odds_map.get(match["home_team"])
+            a_odd = odds_map.get(match["away_team"])
+            d_odd = odds_map.get("Draw", 1.0) # Fallback 1.0 pour les sports sans nul
+            
+            return {
+                "home": h_odd,
+                "draw": d_odd,
+                "away": a_odd,
+                "bookmaker": bm["title"],
+                "source": "the_odds_api"
+            }
+    return None
+
+
 # ── Simulation des cotes (fallback sans clé API-Football) ───────────────────
 
 def simulate_odds(model_probs: dict, bookmaker_margin: float = 0.072) -> dict:
     """
     Génère des cotes réalistes depuis les probas du modèle en appliquant
     une marge bookmaker (7.2% = marge typique Bet365 sur PL 1X2).
-
-    Principe : overround → chaque prob augmentée pour que sum(1/cote) > 1.
-    La marge crée volontairement un écart entre modèle et cotes → simule
-    le comportement d'un vrai bookmaker qui peut mal pricer un match.
     """
     ph = model_probs["home"]
-    pd = model_probs["draw"]
+    pd = model_probs.get("draw", 0.0)
     pa = model_probs["away"]
 
-    # Distribution de la marge (pondérée : favoris moins pénalisés)
-    total = ph + pd + pa   # = 1.0
+    # Distribution de la marge
+    total = ph + pd + pa
     ph_adj = ph + bookmaker_margin * (pd + pa) / 2
-    pd_adj = pd + bookmaker_margin * (ph + pa) / 2
+    pd_adj = pd + bookmaker_margin * (ph + pa) / 2 if pd > 0 else 0
     pa_adj = pa + bookmaker_margin * (ph + pd) / 2
 
-    # Normalisation → sum(adj) = 1 + margin
     sum_adj = ph_adj + pd_adj + pa_adj
 
     return {
         "home":       round(1 / (ph_adj / sum_adj), 2),
-        "draw":       round(1 / (pd_adj / sum_adj), 2),
+        "draw":       round(1 / (pd_adj / sum_adj), 2) if pd > 0 else 0.0,
         "away":       round(1 / (pa_adj / sum_adj), 2),
         "bookmaker":  "simulated_bet365_margin",
         "source":     "simulated",
@@ -116,11 +171,7 @@ def simulate_odds(model_probs: dict, bookmaker_margin: float = 0.072) -> dict:
 
 def detect_value_bet(model_probs: dict, odds: dict) -> dict | None:
     """
-    Filtres STRICTS — tous obligatoires :
-      1. Cote entre 1.80 et 2.50
-      2. Probabilité modèle >= 55%
-      3. Edge >= 7% (0.07)
-      4. Jamais le nul — home ou away uniquement
+    Filtres STRICTS.
     """
     candidates = []
 
@@ -128,21 +179,16 @@ def detect_value_bet(model_probs: dict, odds: dict) -> dict | None:
         model_prob = model_probs[side]
         cote       = odds.get(side)
 
-        if cote is None:
+        if not cote or cote <= 1:
             continue
 
         implied_prob = round(1 / cote, 6)
         edge         = round(model_prob - implied_prob, 6)
 
-        # Filtre 1 : plage de cotes
         if not (1.80 <= cote <= 2.50):
             continue
-
-        # Filtre 2 : probabilité modèle
         if model_prob < 0.55:
             continue
-
-        # Filtre 3 : edge minimum
         if edge < 0.07:
             continue
 
@@ -158,22 +204,12 @@ def detect_value_bet(model_probs: dict, odds: dict) -> dict | None:
     if not candidates:
         return None
 
-    # Retourner le meilleur edge si plusieurs candidats
     return max(candidates, key=lambda x: x["edge"])
 
 
 # ── Mise recommandée Kelly (quart Kelly) ────────────────────────────────────
 
 def kelly_stake(model_prob: float, odds: float, bankroll: float = 1000.0) -> float:
-    """
-    Kelly complet : f* = (b*p - q) / b
-      b = odds - 1  (gain net par unité misée)
-      p = probabilité modèle
-      q = 1 - p
-
-    Quart Kelly (25%) pour limiter le risque.
-    Maximum absolu : 50$ par pari.
-    """
     b = odds - 1.0
     p = model_prob
     q = 1.0 - p
