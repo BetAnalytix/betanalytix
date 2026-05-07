@@ -5,12 +5,14 @@ from datetime import datetime
 import httpx
 from dotenv import load_dotenv
 
-from poisson_model import predict_match, predict_mlb, predict_nba, predict_nhl, predict_tennis
+from poisson_model import predict_match, predict_mlb, predict_nba, predict_nhl, predict_tennis, predict_nfl
 from team_stats import get_league_averages, get_team_stats
 from mlb_stats import get_mlb_today_matches, get_mlb_team_stats, get_mlb_league_averages
 from nba_stats import get_nba_today_matches, get_nba_team_stats, get_nba_league_averages
 from nhl_stats import get_nhl_today_matches, get_nhl_team_stats, get_nhl_league_averages
-from tennis_stats import (
+from tennis_stats import get_tennis_today_matches
+from nfl_stats import get_nfl_today_matches, get_nfl_team_stats
+
     get_tennis_today_matches, get_player_stats as get_tennis_player_stats,
     get_h2h, get_player_season_stats, ranking_to_elo,
     form_score_from_season, fatigue_from_season,
@@ -91,6 +93,7 @@ async def send_combined_alert(candidates: list[dict]) -> bool:
         elif vb.get("sport") == "NBA": sport_icon = "🏀"
         elif vb.get("sport") == "NHL": sport_icon = "🏒"
         elif vb.get("sport") == "Tennis": sport_icon = "🎾"
+        elif vb.get("sport") == "NFL": sport_icon = "🏈"
         
         bet_team = vb["home_team"] if vb["bet_side"] == "home" else vb["away_team"]
         
@@ -348,17 +351,59 @@ async def analyze_tennis_match(match: dict, real_odds_list: list = None) -> dict
     except Exception as e:
         return {"found": False, "reason": f"erreur stats Tennis: {e}"}
 
+async def analyze_nfl_match(match: dict, real_odds_list: list = None) -> dict:
+    try:
+        home_stats, away_stats = await asyncio.gather(
+            get_nfl_team_stats(match["home_id"]),
+            get_nfl_team_stats(match["away_id"])
+        )
+        
+        if not home_stats or not away_stats:
+            return {"found": False, "reason": "stats NFL manquantes"}
+            
+        # Elo NFL basique basé sur le win% (simulé pour le prototype: win% * 400 + 1300)
+        home_elo = home_stats["win_pct"] * 400 + 1300
+        away_elo = away_stats["win_pct"] * 400 + 1300
+        
+        proba = predict_nfl(home_elo, away_elo)
+        model_probs = {"home": proba["prob_home_win"], "away": proba["prob_away_win"]}
+        
+        odds = None
+        if real_odds_list:
+            odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
+            
+        if not odds:
+            return {"found": False, "reason": "cotes NFL introuvables"}
+
+        vb = detect_value_bet(model_probs, odds)
+
+        if not vb:
+            return {"found": False, "reason": "pas de value bet NFL"}
+
+        form_score = (home_stats["win_pct"] + away_stats["win_pct"]) / 2.0
+        score = calculate_score(vb["edge"], vb["model_prob"], form_score, vb["odds"])
+
+        return {
+            "found": True, "home_team": match["home_name"], "away_team": match["away_name"],
+            "bet_side": vb["bet"], "model_prob": vb["model_prob"], "odds": vb["odds"],
+            "edge": vb["edge"], "kelly_stake": kelly_stake(vb["model_prob"], vb["odds"], bankroll=1000.0),
+            "score": score, "sport": "NFL", "league_flag": "🇺🇸", "league": "NFL"
+        }
+    except Exception as e:
+        return {"found": False, "reason": f"erreur stats NFL: {e}"}
+
 async def daily_scan(leagues: list[int], seasons: list[int]) -> dict:
     candidates: list[dict] = []
     matches_analyzed = 0
     
     # --- PRÉ-CHARGEMENT DES COTES RÉELLES ---
-    mlb_odds, nba_odds, nhl_odds, atp_odds, wta_odds = await asyncio.gather(
+    mlb_odds, nba_odds, nhl_odds, atp_odds, wta_odds, nfl_odds = await asyncio.gather(
         get_real_odds("baseball_mlb"),
         get_real_odds("basketball_nba"),
         get_real_odds("icehockey_nhl"),
         get_real_odds("tennis_atp"),
-        get_real_odds("tennis_wta")
+        get_real_odds("tennis_wta"),
+        get_real_odds("americanfootball_nfl")
     )
     
     tennis_odds = atp_odds + wta_odds
@@ -409,6 +454,15 @@ async def daily_scan(leagues: list[int], seasons: list[int]) -> dict:
     for m in tennis_matches:
         matches_analyzed += 1
         res = await analyze_tennis_match(m, real_odds_list=tennis_odds)
+        if res["found"]:
+            res.update({"match_datetime": m["match_datetime"]})
+            candidates.append(res)
+
+    # --- SCAN NFL ---
+    nfl_matches = await get_nfl_today_matches()
+    for m in nfl_matches:
+        matches_analyzed += 1
+        res = await analyze_nfl_match(m, real_odds_list=nfl_odds)
         if res["found"]:
             res.update({"match_datetime": m["match_datetime"]})
             candidates.append(res)

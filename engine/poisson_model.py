@@ -196,3 +196,24 @@ def predict_tennis(
         "prob_draw": 0.0,
         "elo_diff": round(elo1 - elo2, 1)
     }
+
+def predict_nfl(
+    home_elo: float,
+    away_elo: float,
+    home_advantage: float = 65.0 # ~2.5 points NFL Elo scale
+) -> dict:
+    """
+    Modèle NFL Elo avec avantage domicile.
+    """
+    elo_h = home_elo + home_advantage
+    elo_a = away_elo
+    
+    prob_h = 1 / (1 + 10 ** ((elo_a - elo_h) / 400))
+    prob_a = 1 - prob_h
+    
+    return {
+        "prob_home_win": round(prob_h, 4),
+        "prob_away_win": round(prob_a, 4),
+        "prob_draw": 0.0,
+        "elo_diff": round(elo_h - elo_a, 1)
+    }
