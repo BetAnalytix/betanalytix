@@ -10,13 +10,14 @@ from team_stats import get_league_averages, get_team_stats
 from mlb_stats import get_mlb_today_matches, get_mlb_team_stats, get_mlb_league_averages
 from nba_stats import get_nba_today_matches, get_nba_team_stats, get_nba_league_averages
 from nhl_stats import get_nhl_today_matches, get_nhl_team_stats, get_nhl_league_averages
-from tennis_stats import get_tennis_today_matches
-from nfl_stats import get_nfl_today_matches, get_nfl_team_stats
-
-    get_tennis_today_matches, get_player_stats as get_tennis_player_stats,
-    get_h2h, get_player_season_stats, ranking_to_elo,
-    form_score_from_season, fatigue_from_season,
+from tennis_stats import (
+    get_tennis_today_matches,
+    get_player_stats as get_tennis_player_stats, get_h2h,
+    get_player_season_stats,
+    ranking_to_elo,  form_score_from_season,
+    fatigue_from_season
 )
+from nfl_stats import get_nfl_today_matches, get_nfl_team_stats
 from value_bet import detect_value_bet, get_odds, kelly_stake, simulate_odds, get_real_odds, find_match_odds
 
 load_dotenv()

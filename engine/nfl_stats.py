@@ -1,6 +1,5 @@
 import httpx
 from datetime import datetime
-import asyncio
 
 ESPN_NFL_BASE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
 
@@ -8,8 +7,12 @@ async def get_nfl_today_matches():
     """
     Récupère les matchs NFL via l'API ESPN Scoreboard.
     """
+    today = datetime.now().strftime("%Y%m%d")
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(f"{ESPN_NFL_BASE}/scoreboard")
+        resp = await client.get(
+            f"{ESPN_NFL_BASE}/scoreboard",
+            params={"dates": today, "status": "scheduled"}
+        )
         if resp.status_code != 200:
             return []
         
@@ -17,9 +20,12 @@ async def get_nfl_today_matches():
         matches = []
         for event in data.get("events", []):
             competition = event.get("competitions", [{}])[0]
-            home_team = next(t for t in competition.get("competitors", []) if t.get("homeAway") == "home")
-            away_team = next(t for t in competition.get("competitors", []) if t.get("homeAway") == "away")
+            home_team = next((t for t in competition.get("competitors", []) if t.get("homeAway") == "home"), None)
+            away_team = next((t for t in competition.get("competitors", []) if t.get("homeAway") == "away"), None)
             
+            if not home_team or not away_team:
+                continue
+                
             matches.append({
                 "id": event.get("id"),
                 "home_id": home_team.get("id"),
