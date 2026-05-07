@@ -217,3 +217,39 @@ def predict_nfl(
         "prob_draw": 0.0,
         "elo_diff": round(elo_h - elo_a, 1)
     }
+
+def predict_volleyball(
+    home_sets_avg: float,
+    away_sets_avg: float,
+    home_sets_allowed_avg: float,
+    away_sets_allowed_avg: float,
+    league_avg_sets: float = 1.5 # Moyenne de sets gagnés par match par équipe
+) -> dict:
+    """
+    Modèle Poisson pour le Volleyball (Set-by-Set).
+    Prédit la probabilité de victoire finale dans un match au meilleur des 5 sets.
+    """
+    # Lambdas : espérance de sets gagnés
+    lambda_h = (home_sets_avg * away_sets_allowed_avg) / league_avg_sets
+    lambda_a = (away_sets_avg * home_sets_allowed_avg) / league_avg_sets
+    
+    # Probabilité de gagner UN set (simplification via Poisson)
+    # Dans un set, probabilité que H marque plus que A
+    # Pour le volleyball, on utilise souvent le ratio des lambdas pour la proba d'un set
+    prob_set_h = lambda_h / (lambda_h + lambda_a) if (lambda_h + lambda_a) > 0 else 0.5
+    prob_set_a = 1 - prob_set_h
+    
+    # Probabilité match (Best of 5)
+    # H gagne si : 3-0, 3-1, 3-2
+    p_3_0 = prob_set_h ** 3
+    p_3_1 = (prob_set_h ** 3) * prob_set_a * 3 # 3 combinations pour le set perdu avant le 4ème
+    p_3_2 = (prob_set_h ** 3) * (prob_set_a ** 2) * 6 # 6 combinations pour 2 sets perdus avant le 5ème
+    
+    prob_h_win = p_3_0 + p_3_1 + p_3_2
+    
+    return {
+        "prob_home_win": round(float(prob_h_win), 4),
+        "prob_away_win": round(float(1 - prob_h_win), 4),
+        "prob_draw": 0.0,
+        "prob_set_home": round(prob_set_h, 4)
+    }

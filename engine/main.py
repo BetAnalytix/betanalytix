@@ -6,12 +6,13 @@ from dotenv import load_dotenv
 from team_stats import get_team_stats, get_league_averages
 from poisson_model import predict_match
 from value_bet import get_odds, simulate_odds, detect_value_bet, kelly_stake, get_real_odds
-from telegram_alert import daily_scan, send_value_bet_alert, analyze_mlb_match, analyze_nba_match, analyze_nhl_match, analyze_tennis_match, analyze_nfl_match
+from telegram_alert import daily_scan, send_value_bet_alert, analyze_mlb_match, analyze_nba_match, analyze_nhl_match, analyze_tennis_match, analyze_nfl_match, analyze_volleyball_match
 from mlb_stats import get_mlb_today_matches
 from nba_stats import get_nba_today_matches
 from nhl_stats import get_nhl_today_matches
 from tennis_stats import get_tennis_today_matches
 from nfl_stats import get_nfl_today_matches
+from volleyball_stats import get_volleyball_today_matches
 from scheduler import start_scheduler, stop_scheduler
 
 load_dotenv()
@@ -347,6 +348,25 @@ async def scan_nfl():
     
     return {
         "sport": "NFL",
+        "matches_analyzed": len(matches),
+        "value_bets_found": len(results),
+        "results": results
+    }
+
+
+@app.get("/scan-volleyball")
+async def scan_volleyball():
+    matches = await get_volleyball_today_matches()
+    odds = await get_real_odds("volleyball_wovb")
+    
+    results = []
+    for m in matches:
+        res = await analyze_volleyball_match(m, real_odds_list=odds)
+        if res["found"]:
+            results.append(res)
+    
+    return {
+        "sport": "Volleyball",
         "matches_analyzed": len(matches),
         "value_bets_found": len(results),
         "results": results
