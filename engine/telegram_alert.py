@@ -10,7 +10,11 @@ from team_stats import get_league_averages, get_team_stats
 from mlb_stats import get_mlb_today_matches, get_mlb_team_stats, get_mlb_league_averages
 from nba_stats import get_nba_today_matches, get_nba_team_stats, get_nba_league_averages
 from nhl_stats import get_nhl_today_matches, get_nhl_team_stats, get_nhl_league_averages
-from tennis_stats import get_tennis_today_matches
+from tennis_stats import (
+    get_tennis_today_matches, get_player_stats as get_tennis_player_stats,
+    get_h2h, get_player_season_stats, ranking_to_elo,
+    form_score_from_season, fatigue_from_season,
+)
 from value_bet import detect_value_bet, get_odds, kelly_stake, simulate_odds, get_real_odds, find_match_odds
 
 load_dotenv()
@@ -290,25 +294,40 @@ async def analyze_nhl_match(match: dict, season: str = "20232024", real_odds_lis
 
 async def analyze_tennis_match(match: dict, real_odds_list: list = None) -> dict:
     try:
-        # Simulation/Récupération stats simplifiée pour le prototype
-        p1_elo = 1600 # Base simulée
-        p2_elo = 1550 # Base simulée
-        
-        # Le modèle attend Elo, H2H, Fatigue
+        p1_stats, p2_stats, h2h_data, p1_season, p2_season = await asyncio.gather(
+            get_tennis_player_stats(match["home_id"]),
+            get_tennis_player_stats(match["away_id"]),
+            get_h2h(match["home_id"], match["away_id"]),
+            get_player_season_stats(match["home_id"]),
+            get_player_season_stats(match["away_id"]),
+        )
+
+        if not p1_stats or not p2_stats:
+            return {"found": False, "reason": "stats joueurs introuvables"}
+
+        p1_elo = ranking_to_elo(p1_stats.get("WorldRanking", 200))
+        p2_elo = ranking_to_elo(p2_stats.get("WorldRanking", 200))
+
+        h2h_p1_wins = int((h2h_data or {}).get("Player1Wins", 0) or 0)
+        h2h_p2_wins = int((h2h_data or {}).get("Player2Wins", 0) or 0)
+
+        p1_fatigue = fatigue_from_season(p1_season)
+        p2_fatigue = fatigue_from_season(p2_season)
+
         proba = predict_tennis(
             p1_elo_surface=p1_elo,
             p2_elo_surface=p2_elo,
-            h2h_p1_wins=2,
-            h2h_p2_wins=1,
-            p1_fatigue=1,
-            p2_fatigue=2
+            h2h_p1_wins=h2h_p1_wins,
+            h2h_p2_wins=h2h_p2_wins,
+            p1_fatigue=p1_fatigue,
+            p2_fatigue=p2_fatigue,
         )
         model_probs = {"home": proba["prob_home_win"], "away": proba["prob_away_win"]}
-        
+
         odds = None
         if real_odds_list:
             odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
-            
+
         if not odds:
             return {"found": False, "reason": "cotes réelles introuvables"}
 
@@ -317,8 +336,7 @@ async def analyze_tennis_match(match: dict, real_odds_list: list = None) -> dict
         if not vb:
             return {"found": False, "reason": "pas de value bet"}
 
-        # Form score simulé
-        form_score = 0.75
+        form_score = (form_score_from_season(p1_season) + form_score_from_season(p2_season)) / 2.0
         score = calculate_score(vb["edge"], vb["model_prob"], form_score, vb["odds"])
 
         return {
