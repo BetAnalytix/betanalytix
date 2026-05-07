@@ -435,10 +435,17 @@ async def telegram_webhook(request: Request):
                 try:
                     leagues = [39, 140, 78, 135, 61, 2]
                     seasons = [2025, 2024]
-                    res = await daily_scan(leagues, seasons)
+                    # Timeout de 3 minutes (180 secondes)
+                    res = await asyncio.wait_for(daily_scan(leagues, seasons), timeout=180.0)
                     msg = f"✅ Scan terminé.\nAnalysés : {res['matches_analyzed']}\nValue Bets : {res['value_bets_found']}"
                     async with httpx.AsyncClient() as c:
                         await c.post(f"https://api.telegram.org/bot{tkn}/sendMessage", json={"chat_id": cid, "text": msg})
+                except asyncio.TimeoutError:
+                    async with httpx.AsyncClient() as c:
+                        await c.post(f"https://api.telegram.org/bot{tkn}/sendMessage", json={"chat_id": cid, "text": "🛑 Scan interrompu - timeout 3 minutes"})
+                except Exception as e:
+                    async with httpx.AsyncClient() as c:
+                        await c.post(f"https://api.telegram.org/bot{tkn}/sendMessage", json={"chat_id": cid, "text": f"❌ Erreur lors du scan : {str(e)}"})
                 finally:
                     is_scanning = False
 
