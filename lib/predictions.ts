@@ -14,7 +14,7 @@ export type PredictionResult = {
   recommendedStake?: number // Ajout pour mapper kelly_stake
 }
 
-const ENGINE_URL = 'http://localhost:8000/analyze'
+const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL || 'http://localhost:8000/analyze'
 
 export async function generatePrediction(
   match: Match
@@ -27,7 +27,11 @@ export async function generatePrediction(
       season: '2024',
     })
 
-    const response = await fetch(`${ENGINE_URL}?${params.toString()}`)
+    const finalUrl = ENGINE_URL.includes('?') 
+      ? `${ENGINE_URL}&${params.toString()}` 
+      : `${ENGINE_URL}?${params.toString()}`
+
+    const response = await fetch(finalUrl)
     
     if (!response.ok) {
       throw new Error(`Engine API error: ${response.status}`)

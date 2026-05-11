@@ -90,18 +90,19 @@ async def send_combined_alert(candidates: list[dict]) -> bool:
 
     text = "🚀 **TOP 5 VALUE BETS DU JOUR** 🚀\n\n"
     for i, vb in enumerate(candidates[:5]):
+        sport_name = vb.get("sport", "Sport")
         sport_icon = "⚽"
-        if vb.get("sport") == "MLB": sport_icon = "⚾"
-        elif vb.get("sport") == "NBA": sport_icon = "🏀"
-        elif vb.get("sport") == "NHL": sport_icon = "🏒"
-        elif vb.get("sport") == "Tennis": sport_icon = "🎾"
-        elif vb.get("sport") == "NFL": sport_icon = "🏈"
-        elif vb.get("sport") == "Volleyball": sport_icon = "🏐"
+        if sport_name == "MLB": sport_icon = "⚾"
+        elif sport_name == "NBA": sport_icon = "🏀"
+        elif sport_name == "NHL": sport_icon = "🏒"
+        elif sport_name == "Tennis": sport_icon = "🎾"
+        elif sport_name == "NFL": sport_icon = "🏈"
+        elif sport_name == "Volleyball": sport_icon = "🏐"
         
         bet_team = vb["home_team"] if vb["bet_side"] == "home" else vb["away_team"]
         
         text += (
-            f"{i+1}. {sport_icon} {vb['league_flag']} **{vb['home_team']} vs {vb['away_team']}**\n"
+            f"{i+1}. {sport_icon} **[{sport_name}]** {vb['league_flag']} **{vb['home_team']} vs {vb['away_team']}**\n"
             f"   🎯 Pari : {bet_team} | 💰 Cote : {vb['odds']}\n"
             f"   🔥 Score : {vb['score']}/100 | 📈 Edge : +{round(vb['edge'] * 100, 1)}%\n"
             f"   📊 Prob : {round(vb['model_prob'] * 100, 1)}% | 💵 Mise : {vb['kelly_stake']}$\n\n"
@@ -205,7 +206,8 @@ async def analyze_mlb_match(match: dict, season: int = 2024, real_odds_list: lis
         odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
     
     if not odds:
-        return {"found": False, "reason": "cotes réelles introuvables"}
+        # Fallback : simulation des cotes si les réelles sont introuvables
+        odds = simulate_odds(model_probs)
 
     vb = detect_value_bet(model_probs, odds)
 
@@ -243,7 +245,7 @@ async def analyze_nba_match(match: dict, season: int = 2023, real_odds_list: lis
         odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
         
     if not odds:
-        return {"found": False, "reason": "cotes réelles introuvables"}
+        odds = simulate_odds(model_probs)
 
     vb = detect_value_bet(model_probs, odds)
 
@@ -281,7 +283,7 @@ async def analyze_nhl_match(match: dict, season: str = "20232024", real_odds_lis
         odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
         
     if not odds:
-        return {"found": False, "reason": "cotes réelles introuvables"}
+        odds = simulate_odds(model_probs)
 
     vb = detect_value_bet(model_probs, odds)
 
@@ -335,7 +337,7 @@ async def analyze_tennis_match(match: dict, real_odds_list: list = None) -> dict
             odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
 
         if not odds:
-            return {"found": False, "reason": "cotes réelles introuvables"}
+            odds = simulate_odds(model_probs)
 
         vb = detect_value_bet(model_probs, odds)
 
@@ -376,7 +378,7 @@ async def analyze_nfl_match(match: dict, real_odds_list: list = None) -> dict:
             odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
             
         if not odds:
-            return {"found": False, "reason": "cotes NFL introuvables"}
+            odds = simulate_odds(model_probs)
 
         vb = detect_value_bet(model_probs, odds)
 
@@ -423,7 +425,7 @@ async def analyze_volleyball_match(match: dict, real_odds_list: list = None) -> 
             odds = find_match_odds(real_odds_list, match["home_name"], match["away_name"])
             
         if not odds:
-            return {"found": False, "reason": "cotes Volleyball introuvables"}
+            odds = simulate_odds(model_probs)
 
         vb = detect_value_bet(model_probs, odds)
 

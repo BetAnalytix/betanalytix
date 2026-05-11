@@ -8,7 +8,7 @@ API_FOOTBALL_KEY  = os.getenv("API_FOOTBALL_KEY", "")
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
 ODDS_API_KEY      = os.getenv("ODDS_API_KEY", "")
-ODDS_API_BASE     = "https://api.the-odds-api.com/v1"
+ODDS_API_BASE     = "https://api.the-odds-api.com/v4"
 
 # Priorité bookmakers : Bet365 (1) > William Hill (2)
 TARGET_BOOKMAKERS = [1, 2]
@@ -37,7 +37,11 @@ async def get_odds(fixture_id: int) -> dict | None:
     if resp.status_code != 200:
         return None
 
-    response_data = resp.json().get("response", [])
+    try:
+        response_data = resp.json().get("response", [])
+    except Exception:
+        return None
+
     if not response_data:
         return None
 
@@ -88,21 +92,26 @@ async def get_real_odds(sport_key: str) -> list[dict]:
     if not ODDS_API_KEY:
         return []
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(
-            f"{ODDS_API_BASE}/sports/{sport_key}/odds",
-            params={
-                "apiKey": ODDS_API_KEY,
-                "regions": "eu",
-                "markets": "h2h",
-                "oddsFormat": "decimal"
-            },
-        )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{ODDS_API_BASE}/sports/{sport_key}/odds",
+                params={
+                    "apiKey": ODDS_API_KEY,
+                    "regions": "eu",
+                    "markets": "h2h",
+                    "oddsFormat": "decimal"
+                },
+            )
 
-    if resp.status_code != 200:
+        if resp.status_code != 200:
+            print(f"The Odds API Error ({sport_key}): {resp.status_code}")
+            return []
+
+        return resp.json()
+    except Exception as e:
+        print(f"Exception in get_real_odds ({sport_key}): {e}")
         return []
-
-    return resp.json()
 
 
 def find_match_odds(odds_list: list[dict], home_team: str, away_team: str) -> dict | None:

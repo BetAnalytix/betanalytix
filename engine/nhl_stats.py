@@ -11,7 +11,7 @@ async def get_nhl_team_stats(team_abbr: str, season: str = "20232024"):
     """
     Récupère les stats de buts (marqués/encaissés) et la forme (5 derniers matchs).
     """
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
         # Stats globales de l'équipe
         stats_resp = await client.get(f"{NHL_API_BASE}/club-stats/{team_abbr}/{season}/2") # 2 = Regular Season
         # Calendrier pour la forme
@@ -26,9 +26,12 @@ async def get_nhl_team_stats(team_abbr: str, season: str = "20232024"):
     # ou agréger les stats joueurs, mais standings est plus simple pour les buts d'équipe.
     
     # Correction : Utilisation de standings pour les stats d'équipe
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         standings_resp = await client.get(f"{NHL_API_BASE}/standings/now")
     
+    if standings_resp.status_code != 200:
+        return None
+
     standings_data = standings_resp.json().get("standings", [])
     team_standing = next((s for s in standings_data if s["teamAbbrev"]["default"] == team_abbr), None)
     
@@ -76,13 +79,17 @@ async def get_nhl_team_stats(team_abbr: str, season: str = "20232024"):
 
 async def get_nhl_today_matches():
     today = datetime.now().strftime("%Y-%m-%d")
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         resp = await client.get(f"{NHL_API_BASE}/schedule/{today}")
     
     if resp.status_code != 200:
         return []
 
-    data = resp.json()
+    try:
+        data = resp.json()
+    except Exception:
+        return []
+        
     matches = []
     # L'API schedule retourne une liste de "gameWeek"
     for day in data.get("gameWeek", []):
@@ -102,13 +109,17 @@ async def get_nhl_league_averages():
     """
     Récupère la moyenne de buts de la ligue via les standings.
     """
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         resp = await client.get(f"{NHL_API_BASE}/standings/now")
     
     if resp.status_code != 200:
         return 3.1 # Moyenne NHL historique approx
         
-    standings = resp.json().get("standings", [])
+    try:
+        standings = resp.json().get("standings", [])
+    except Exception:
+        return 3.1
+
     if not standings: return 3.1
 
     total_goals = sum(s.get("goalFor", 0) for s in standings)

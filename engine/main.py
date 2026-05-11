@@ -435,19 +435,42 @@ async def telegram_webhook(request: Request):
                 try:
                     leagues = [39, 140, 78, 135, 61, 2]
                     seasons = [2025, 2024]
-                    # Timeout de 3 minutes (180 secondes)
-                    res = await asyncio.wait_for(daily_scan(leagues, seasons), timeout=180.0)
-                    msg = f"✅ Scan terminé.\nAnalysés : {res['matches_analyzed']}\nValue Bets : {res['value_bets_found']}"
+                    
+                    # Log de début
+                    print(f"[{datetime.utcnow()}] Démarrage du scan pour {cid}")
+                    
+                    # Augmentation du timeout à 15 minutes
+                    res = await asyncio.wait_for(daily_scan(leagues, seasons), timeout=900.0)
+                    
+                    msg = f"✅ **Scan terminé.**\n\n📊 Matchs analysés : {res['matches_analyzed']}\n🎯 Value Bets trouvés : {res['value_bets_found']}"
+                    
+                    if res['value_bets_found'] == 0:
+                        msg += "\n\nℹ️ **Aucun Value Bet détecté.**\n\nCela peut être dû à :\n1. Des filtres très stricts (Cote 1.80-2.50, Prob >= 55%, Edge >= 7%).\n2. L'absence de cotes réelles (clé ODDS_API_KEY manquante)."
+                    
                     async with httpx.AsyncClient() as c:
-                        await c.post(f"https://api.telegram.org/bot{tkn}/sendMessage", json={"chat_id": cid, "text": msg})
+                        await c.post(f"https://api.telegram.org/bot{tkn}/sendMessage", json={
+                            "chat_id": cid, 
+                            "text": msg,
+                            "parse_mode": "Markdown"
+                        })
+                        
                 except asyncio.TimeoutError:
                     async with httpx.AsyncClient() as c:
-                        await c.post(f"https://api.telegram.org/bot{tkn}/sendMessage", json={"chat_id": cid, "text": "🛑 Scan interrompu - timeout 3 minutes"})
+                        await c.post(f"https://api.telegram.org/bot{tkn}/sendMessage", json={"chat_id": cid, "text": "🛑 **Scan interrompu** - Le processus a dépassé 15 minutes."})
                 except Exception as e:
+                    error_msg = f"❌ **Erreur lors du scan :**\n`{str(e)}`"
+                    print(f"Scan Error: {e}")
+                    import traceback
+                    traceback.print_exc()
                     async with httpx.AsyncClient() as c:
-                        await c.post(f"https://api.telegram.org/bot{tkn}/sendMessage", json={"chat_id": cid, "text": f"❌ Erreur lors du scan : {str(e)}"})
+                        await c.post(f"https://api.telegram.org/bot{tkn}/sendMessage", json={
+                            "chat_id": cid, 
+                            "text": error_msg,
+                            "parse_mode": "Markdown"
+                        })
                 finally:
                     is_scanning = False
+                    print(f"[{datetime.utcnow()}] Scan terminé (is_scanning=False)")
 
             asyncio.create_task(run_async_scan(chat_id, token))
             await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "🚀 Scan global lancé en arrière-plan. Vous recevrez les résultats d'ici quelques minutes."})
@@ -493,8 +516,12 @@ async def telegram_webhook(request: Request):
                 await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
 
         elif text == "/help":
-            msg = "🤖 **Commandes disponibles :**\n\n/scan - Lancer un scan immédiat\n/stats - Bilan des 7 derniers jours\n/bankroll - Voir le capital actuel\n/help - Liste des commandes"
+            msg = "🤖 **Commandes disponibles :**\n\n/scan - Lancer un scan immédiat\n/stats - Bilan des 7 derniers jours\n/bankroll - Voir le capital actuel\n/reset - Débloquer le scan si bloqué\n/help - Liste des commandes"
             await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
+
+        elif text == "/reset":
+            is_scanning = False
+            await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "🔄 **Le verrou de scan a été réinitialisé.** Vous pouvez relancer un /scan."})
 
     return {"status": "ok"}
 

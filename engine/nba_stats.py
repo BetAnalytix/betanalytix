@@ -16,6 +16,8 @@ def _headers() -> dict:
 async def get_nba_teams():
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{NBA_API_BASE}/teams", headers=_headers())
+        if resp.status_code != 200:
+            return []
         return resp.json().get("data", [])
 
 async def get_nba_team_stats(team_id: int, season: int = 2023):
@@ -39,11 +41,18 @@ async def get_nba_team_stats(team_id: int, season: int = 2023):
         games_resp = await client.get(
             f"{NBA_API_BASE}/games",
             headers=_headers(),
-            params={"seasons[]": [season], "team_ids[]": [team_id], "per_page": 10} # On prend un peu plus pour filtrer les terminés
+            params={"seasons[]": [season], "team_ids[]": [team_id], "per_page": 10}
         )
 
-    base_data = base_resp.json().get("data", [{}])
-    opp_data = opp_resp.json().get("data", [{}])
+    if base_resp.status_code != 200 or opp_resp.status_code != 200 or games_resp.status_code != 200:
+        return None
+
+    try:
+        base_data = base_resp.json().get("data", [])
+        opp_data = opp_resp.json().get("data", [])
+        games_data = games_resp.json().get("data", [])
+    except Exception:
+        return None
     
     if not base_data or not opp_data:
         return None
@@ -52,9 +61,8 @@ async def get_nba_team_stats(team_id: int, season: int = 2023):
     stats_opp = opp_data[0]
 
     # Forme : 5 derniers matchs
-    games = games_resp.json().get("data", [])
     # Filtrer les matchs terminés et trier par date décroissante
-    finished_games = [g for g in games if g.get("status") == "Final"]
+    finished_games = [g for g in games_data if g.get("status") == "Final"]
     finished_games.sort(key=lambda x: x.get("date"), reverse=True)
     
     results = []
@@ -91,7 +99,14 @@ async def get_nba_today_matches():
             params={"dates[]": [today]}
         )
     
-    data = resp.json()
+    if resp.status_code != 200:
+        return []
+
+    try:
+        data = resp.json()
+    except Exception:
+        return []
+
     matches = []
     for game in data.get("data", []):
         matches.append({
@@ -115,7 +130,14 @@ async def get_nba_league_averages(season: int = 2023):
             params={"season": season, "season_type": "regular", "type": "base"}
         )
     
-    data = resp.json().get("data", [])
+    if resp.status_code != 200:
+        return 114.0
+
+    try:
+        data = resp.json().get("data", [])
+    except Exception:
+        return 114.0
+
     if not data:
         return 114.0 # Moyenne NBA moderne approximative
         
